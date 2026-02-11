@@ -1,0 +1,79 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/${{ secrets.WIF_POOL_ID }}/providers/${{ secrets.WIF_PROVIDER_ID }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Install dependencies
+        run: uv sync --extra pipelines
+
+      - name: Build and push pipeline container image
+        env:
+          REGION: ${{ vars.REGION }}
+          CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
+        run: |
+          IMAGE_URI="${REGION}-docker.pkg.dev/${CICD_PROJECT_ID}/fraud-detector-docker/fraud-detector:${GITHUB_SHA}"
+          gcloud builds submit --tag "${IMAGE_URI}" --project "${CICD_PROJECT_ID}" --quiet
+
+      - name: Deploy training pipeline to production
+        env:
+          PROJECT_ID: ${{ vars.PROD_PROJECT_ID }}
+          CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
+          REGION: ${{ vars.REGION }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: uv run python -m fraud_detector.pipelines.submit_pipeline --pipeline training
+
+      - name: Deploy scoring pipeline to production
+        env:
+          PROJECT_ID: ${{ vars.PROD_PROJECT_ID }}
+          CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
+          REGION: ${{ vars.REGION }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: uv run python -m fraud_detector.pipelines.submit_pipeline --pipeline scoring
+
+      - name: Update training pipeline schedule
+        env:
+          PROJECT_ID: ${{ vars.PROD_PROJECT_ID }}
+          CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
+          REGION: ${{ vars.REGION }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: uv run python -m fraud_detector.pipelines.submit_pipeline --pipeline training --schedule-only
+
+      - name: Update scoring pipeline schedule
+        env:
+          PROJECT_ID: ${{ vars.PROD_PROJECT_ID }}
+          CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
+          REGION: ${{ vars.REGION }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: uv run python -m fraud_detector.pipelines.submit_pipeline --pipeline scoring --schedule-only

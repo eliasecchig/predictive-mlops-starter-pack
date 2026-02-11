@@ -1,0 +1,20 @@
+pipeline_name: fraud-detector-training
+schedule: "0 2 * * 0"          # Weekly Sunday 2am
+project_id: ${PROJECT_ID}
+region: us-central1
+bq_dataset: fraud_detection
+feature_table: fraud_features
+model_display_name: fraud-detector-xgb
+eval_threshold_auc: 0.85
+train_test_split_date: "2024-01-01T18:00:00"
+enable_caching: true
+xgb_params:
+  max_depth: 6
+  n_estimators: 200
+  learning_rate: 0.1
+  scale_pos_weight: 10
+  eval_metric: auc
+  objective: "binary:logistic"
+sql:
+  read_raw: read_raw_transactions.sql
+  read_features: read_features.sql

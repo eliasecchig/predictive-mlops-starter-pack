@@ -1,0 +1,80 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit -v
+
+  deploy-staging:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/${{ secrets.WIF_POOL_ID }}/providers/${{ secrets.WIF_PROVIDER_ID }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Install dependencies
+        run: uv sync --extra pipelines
+
+      - name: Build and push pipeline container image
+        env:
+          REGION: ${{ vars.REGION }}
+          CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
+        run: |
+          IMAGE_URI="${REGION}-docker.pkg.dev/${CICD_PROJECT_ID}/fraud-detector-docker/fraud-detector:${GITHUB_SHA}"
+          gcloud builds submit --tag "${IMAGE_URI}" --project "${CICD_PROJECT_ID}" --quiet
+
+      - name: Deploy training pipeline to staging
+        env:
+          PROJECT_ID: ${{ vars.STAGING_PROJECT_ID }}
+          CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
+          REGION: ${{ vars.REGION }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: uv run python -m fraud_detector.pipelines.submit_pipeline --pipeline training
+
+      - name: Deploy scoring pipeline to staging
+        env:
+          PROJECT_ID: ${{ vars.STAGING_PROJECT_ID }}
+          CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
+          REGION: ${{ vars.REGION }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: uv run python -m fraud_detector.pipelines.submit_pipeline --pipeline scoring

@@ -1,0 +1,14 @@
+pipeline_name: fraud-detector-scoring
+schedule: "0 */6 * * *"       # Every 6 hours
+project_id: ${PROJECT_ID}
+region: us-central1
+bq_dataset: fraud_detection
+feature_table: fraud_features
+predictions_table: fraud_scores
+model_display_name: fraud-detector-xgb
+model_version_alias: champion
+enable_caching: true
+sql:
+  read_raw: read_raw_transactions.sql
+  read_features: read_features.sql
+  read_unscored: read_unscored.sql

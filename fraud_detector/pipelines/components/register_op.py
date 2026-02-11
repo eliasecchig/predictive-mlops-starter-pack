@@ -1,0 +1,48 @@
+"""KFP component — conditional model registration."""
+
+from kfp import dsl
+
+from fraud_detector.pipelines import get_base_image
+
+
+@dsl.component(base_image=get_base_image(), install_kfp_package=False)
+def register_op(
+    project_id: str,
+    region: str,
+    model_display_name: str,
+    model: dsl.Input[dsl.Model],
+    auc_roc: float,
+    threshold_auc: float,
+) -> str:
+    """Register model to Vertex AI Model Registry if AUC exceeds threshold."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if auc_roc < threshold_auc:
+        logger.warning("AUC %.4f < threshold %.4f — model NOT registered", auc_roc, threshold_auc)
+        return "NOT_REGISTERED"
+
+    # Local runs: model.uri is a local path, skip Vertex registration
+    if not model.uri.startswith("gs://"):
+        logger.info(
+            "Local run — skipping Vertex registration (AUC %.4f, model at %s)",
+            auc_roc,
+            model.uri,
+        )
+        return "LOCAL_ONLY"
+
+    from google.cloud import aiplatform
+
+    # artifact_uri must be a directory; model.uri points to the file inside it
+    artifact_dir = model.uri.rsplit("/", 1)[0]
+
+    aiplatform.init(project=project_id, location=region)
+    registered = aiplatform.Model.upload(
+        display_name=model_display_name,
+        artifact_uri=artifact_dir,
+        serving_container_image_uri="us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-3:latest",
+        labels={"auc_roc": str(round(auc_roc, 4)).replace(".", "_")},
+    )
+    logger.info("Model registered: %s (resource: %s)", model_display_name, registered.resource_name)
+    return registered.resource_name
