@@ -120,7 +120,7 @@ def load_df_to_bq(client: bigquery.Client, df: pd.DataFrame, table_ref: str) -> 
 
 def main():
     parser = argparse.ArgumentParser(description="Load FraudFinder data into BigQuery")
-    parser.add_argument("--project-id", default="asp-test-dev", help="GCP project ID")
+    parser.add_argument("--project-id", default=None, help="GCP project ID (defaults to $PROJECT_ID or gcloud config)")
     parser.add_argument("--dataset", default="fraud_detection", help="BigQuery dataset name")
     parser.add_argument("--location", default="US", help="BigQuery dataset location")
     parser.add_argument(
@@ -134,6 +134,10 @@ def main():
     parser.add_argument("--n-transactions", type=int, default=50_000, help="Number of synthetic transactions")
     args = parser.parse_args()
 
+    if args.project_id is None:
+        from fraud_detector.config import get_project_id
+
+        args.project_id = get_project_id()
     client = bigquery.Client(project=args.project_id)
 
     # Step 1: Create dataset
