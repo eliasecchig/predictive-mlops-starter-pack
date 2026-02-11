@@ -13,6 +13,26 @@ resource "google_artifact_registry_repository" "docker_repo" {
 }
 
 # ------------------------------------------------------------------
+# Grant Vertex AI Service Agents read access to Docker repo
+# (Staging/Prod Vertex AI needs to pull images from CICD AR repo)
+# ------------------------------------------------------------------
+
+data "google_project" "deploy_projects" {
+  for_each   = local.deploy_project_ids
+  project_id = each.value
+}
+
+resource "google_artifact_registry_repository_iam_member" "vertex_ai_reader" {
+  for_each = local.deploy_project_ids
+
+  project    = var.cicd_runner_project_id
+  location   = var.region
+  repository = google_artifact_registry_repository.docker_repo.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:service-${data.google_project.deploy_projects[each.key].number}@gcp-sa-aiplatform-cc.iam.gserviceaccount.com"
+}
+
+# ------------------------------------------------------------------
 # Pipeline Root GCS Buckets (one per deployment project)
 # ------------------------------------------------------------------
 
