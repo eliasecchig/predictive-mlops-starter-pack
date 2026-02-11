@@ -14,7 +14,12 @@ logger = logging.getLogger(__name__)
 # Ensure project root is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-PROJECT_ID = os.environ.get("PROJECT_ID", "asp-test-dev")
+import google.auth
+
+_credentials, _auth_project = google.auth.default()
+PROJECT_ID = os.environ.get("PROJECT_ID") or _auth_project
+if not PROJECT_ID:
+    raise RuntimeError("PROJECT_ID not set and could not be inferred from gcloud auth")
 os.environ["PROJECT_ID"] = PROJECT_ID
 
 import pandas as pd

@@ -161,6 +161,7 @@ def run_local(pipeline_name: str, config: dict) -> None:
     if pipeline_name == "training":
         from fraud_detector.pipelines.training_pipeline import training_pipeline
 
+        monitoring_config = load_config("monitoring")
         xgb_params = config.get("xgb_params", {})
         training_pipeline(
             project_id=config["project_id"],
@@ -176,6 +177,12 @@ def run_local(pipeline_name: str, config: dict) -> None:
             n_estimators=xgb_params.get("n_estimators", 200),
             learning_rate=xgb_params.get("learning_rate", 0.1),
             scale_pos_weight=float(xgb_params.get("scale_pos_weight", 10.0)),
+            alert_emails=",".join(monitoring_config.get("alert_emails", [])),
+            default_drift_threshold=float(
+                min(monitoring_config.get("drift_thresholds", {}).values() or [0.3])
+            ),
+            predictions_table=monitoring_config.get("predictions_table", "fraud_scores"),
+            monitoring_schedule=monitoring_config.get("schedule", "0 8 * * 1"),
         )
     elif pipeline_name == "scoring":
         from fraud_detector.pipelines.scoring_pipeline import scoring_pipeline
@@ -211,6 +218,7 @@ def submit_to_vertex(
 
     # Build pipeline params from config
     if pipeline_name == "training":
+        monitoring_config = load_config("monitoring")
         xgb_params = config.get("xgb_params", {})
         params = {
             "project_id": project_id,
@@ -226,6 +234,12 @@ def submit_to_vertex(
             "n_estimators": xgb_params.get("n_estimators", 200),
             "learning_rate": xgb_params.get("learning_rate", 0.1),
             "scale_pos_weight": xgb_params.get("scale_pos_weight", 10.0),
+            "alert_emails": ",".join(monitoring_config.get("alert_emails", [])),
+            "default_drift_threshold": float(
+                min(monitoring_config.get("drift_thresholds", {}).values() or [0.3])
+            ),
+            "predictions_table": monitoring_config.get("predictions_table", "fraud_scores"),
+            "monitoring_schedule": monitoring_config.get("schedule", "0 8 * * 1"),
         }
     else:
         params = {
