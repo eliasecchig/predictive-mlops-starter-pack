@@ -63,6 +63,7 @@ jobs:
           CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
           REGION: ${{ vars.REGION }}
           IMAGE_TAG: ${{ github.sha }}
+          PIPELINE_SA_EMAIL: ${{ vars.PIPELINE_SA_EMAIL_PROD }}
         run: uv run python -m fraud_detector.pipelines.submit_pipeline --pipeline training
 
       - name: Deploy scoring pipeline to production
@@ -71,6 +72,7 @@ jobs:
           CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
           REGION: ${{ vars.REGION }}
           IMAGE_TAG: ${{ github.sha }}
+          PIPELINE_SA_EMAIL: ${{ vars.PIPELINE_SA_EMAIL_PROD }}
         run: uv run python -m fraud_detector.pipelines.submit_pipeline --pipeline scoring
 
       - name: Update training pipeline schedule
@@ -79,6 +81,7 @@ jobs:
           CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
           REGION: ${{ vars.REGION }}
           IMAGE_TAG: ${{ github.sha }}
+          PIPELINE_SA_EMAIL: ${{ vars.PIPELINE_SA_EMAIL_PROD }}
         run: uv run python -m fraud_detector.pipelines.submit_pipeline --pipeline training --schedule-only
 
       - name: Update scoring pipeline schedule
@@ -87,4 +90,5 @@ jobs:
           CICD_PROJECT_ID: ${{ vars.CICD_PROJECT_ID }}
           REGION: ${{ vars.REGION }}
           IMAGE_TAG: ${{ github.sha }}
+          PIPELINE_SA_EMAIL: ${{ vars.PIPELINE_SA_EMAIL_PROD }}
         run: uv run python -m fraud_detector.pipelines.submit_pipeline --pipeline scoring --schedule-only

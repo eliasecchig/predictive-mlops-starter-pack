@@ -241,6 +241,7 @@ def submit_to_vertex(
 
     pipeline_root = f"gs://{project_id}-fraud-detector-pipeline-root"
     display_name = config.get("pipeline_name", f"fraud-detector-{pipeline_name}")
+    pipeline_sa = os.environ.get("PIPELINE_SA_EMAIL")
 
     if schedule_only:
         schedule = cron_schedule or config.get("schedule", "0 2 * * 0")
@@ -256,6 +257,7 @@ def submit_to_vertex(
         job.create_schedule(
             display_name=f"{display_name}-schedule",
             cron=schedule,
+            service_account=pipeline_sa,
         )
         print(f"Schedule created: {display_name} — cron: {schedule}")
     else:
@@ -266,7 +268,7 @@ def submit_to_vertex(
             parameter_values=params,
             enable_caching=caching,
         )
-        job.submit()
+        job.submit(service_account=pipeline_sa)
         print(f"Pipeline submitted: {display_name}")
 
 
