@@ -36,6 +36,15 @@ This loads real FraudFinder transaction data from a public GCS bucket (`gs://fra
 
 **Data source**: 1 month of transactions from `cymbal-fraudfinder.txbackup.all` (Jan 2024), ~2% fraud rate.
 
+### Verified output
+
+| Table | Rows |
+|-------|------|
+| `tx` | 101,490 |
+| `txlabels` | (joined via `tx_id`) |
+| `fraud_features` | 101,490 (written by feature engineering) |
+| `fraud_scores` | 101,490 (written by scoring pipeline) |
+
 ## Step 4: Run Training Pipeline Locally
 
 ```bash
@@ -45,49 +54,79 @@ make run-training-local
 This runs the full KFP training pipeline locally using `kfp.local.SubprocessRunner`:
 
 ```
-feature-engineering-op  →  Reads raw BQ data, computes 25 rolling features, writes to BQ
-train-op                →  Trains XGBoost model, uploads to GCS
-evaluate-op             →  Evaluates on holdout set, returns AUC-ROC
-register-op             →  Registers model in Vertex AI if AUC >= threshold (0.85)
+feature-engineering-op  ->  Reads raw BQ data, computes 25 rolling features, writes to BQ
+train-op                ->  Trains XGBoost model (6 depth, 200 estimators), uploads artifact
+evaluate-op             ->  Evaluates on holdout set, returns AUC-ROC
+register-op             ->  Registers model in Vertex AI if AUC >= threshold (skipped locally)
+setup-monitoring-op     ->  Sets up Model Monitoring v2 (skipped locally: SKIPPED:LOCAL_ONLY)
 ```
 
-Expected results with sample data: AUC ~0.888, model registered.
+### Verified output
+
+- **AUC-ROC**: 0.8880
+- **register-op**: `LOCAL_ONLY` (expected — model URI is local, skips Vertex registration)
+- **setup-monitoring-op**: `SKIPPED:LOCAL_ONLY` (expected — no model to monitor)
+- All 5 steps: SUCCESS
 
 ## Step 5: Run Tests
 
 ```bash
 make test-unit
+make lint
 ```
 
-9 unit tests covering feature engineering and training logic.
+### Verified output
 
-## Step 6: Submit Pipeline to Vertex AI (Dev)
+- **15 unit tests passed** (feature engineering: 5, monitoring: 6, training: 4)
+- **Lint**: all checks passed, 22 files formatted
+
+## Step 6: Submit Training Pipeline to Vertex AI
 
 ```bash
+export PROJECT_ID=asp-test-dev
+export CICD_PROJECT_ID=asp-test-dev
+export PIPELINE_SA_EMAIL=fraud-detector-pipelines@$PROJECT_ID.iam.gserviceaccount.com
 make submit-training
 ```
 
-This compiles the KFP pipeline and submits it to Vertex AI Pipelines on your dev project. No Terraform required — the buckets and datasets were already created by previous steps.
+This builds the container image (content-hash tagged), compiles the KFP pipeline, and submits to Vertex AI.
 
-Check pipeline status:
+### Verified output
 
-```python
-from google.cloud import aiplatform
+All 5 pipeline steps succeeded on Vertex AI:
 
-aiplatform.init(project="<project-id>", location="us-central1")
+| Step | Status | Output |
+|------|--------|--------|
+| `feature-engineering-op` | SUCCEEDED | `asp-test-dev.fraud_detection.fraud_features` |
+| `train-op` | SUCCEEDED | Model artifact uploaded to GCS |
+| `evaluate-op` | SUCCEEDED | AUC-ROC: **0.8880** |
+| `register-op` | SUCCEEDED | `projects/901701644605/locations/us-central1/models/1220914204156887040` |
+| `setup-monitoring-op` | SUCCEEDED | Monitor ID: `4170724681084567552` |
 
-# List recent pipeline runs
-jobs = aiplatform.PipelineJob.list(
-    filter='display_name="fraud-detector-training"',
-    order_by="create_time desc",
-)
-job = jobs[0]
-print(f"State: {job.state.name}")
-for task in job.task_details:
-    print(f"  {task.task_name}: {task.state.name}")
+- **Model registered** in Vertex AI Model Registry as `fraud-detector-xgb` (version 1)
+- **Model Monitor created** with weekly drift detection schedule (Monday 8am)
+- **Drift detection**: Jensen-Shannon divergence, threshold 0.3, comparing `fraud_features` vs `fraud_scores`
+
+## Step 7: Submit Scoring Pipeline to Vertex AI
+
+```bash
+make submit-scoring
 ```
 
-## Step 7: Deploy Infrastructure + CI/CD
+### Verified output
+
+All 3 scoring pipeline steps succeeded:
+
+| Step | Status |
+|------|--------|
+| `feature-engineering-op` | SUCCEEDED |
+| `predict-op` | SUCCEEDED |
+| `write-predictions-op` | SUCCEEDED |
+
+- **101,490 transactions scored** to `fraud_detection.fraud_scores`
+- **1,744 predicted fraud** (1.7%), avg fraud probability 0.061
+
+## Step 8: Deploy Infrastructure + CI/CD
 
 Edit `deployment/terraform/vars/env.tfvars` with your values:
 
@@ -118,7 +157,7 @@ This creates:
 - GitHub Actions variables (`GCP_PROJECT_NUMBER`, `STAGING_PROJECT_ID`, `PROD_PROJECT_ID`, etc.)
 - GitHub production environment with branch protection
 
-## Step 8: Push to Main
+## Step 9: Push to Main
 
 ```bash
 git add -A && git commit -m "feat: initial fraud detection pipeline"
@@ -130,6 +169,21 @@ This triggers the CI/CD pipeline:
 1. **PR checks** (`pr_checks.yaml`): lint + unit tests on pull requests
 2. **Staging deploy** (`staging.yaml`): on merge to main — compiles and submits training + scoring pipelines to staging
 3. **Prod deploy** (`deploy-to-prod.yaml`): manual dispatch — deploys to prod + creates pipeline schedules
+
+## Production Checklist
+
+- [x] Data loaded into BigQuery (101K transactions)
+- [x] Unit tests passing (15/15)
+- [x] Lint passing
+- [x] Local pipeline run validated
+- [x] Training pipeline on Vertex AI: all 5 steps succeeded
+- [x] Model registered in Vertex AI Model Registry (AUC 0.888 >= 0.85 threshold)
+- [x] Model Monitoring v2 configured (weekly drift detection)
+- [x] Scoring pipeline on Vertex AI: all 3 steps succeeded
+- [x] Predictions written to BigQuery (101K rows scored)
+- [ ] Update `monitoring.yaml` alert emails from `team@example.com` to real addresses
+- [ ] Terraform applied for staging/prod environments
+- [ ] CI/CD pipeline triggered via push to main
 
 ## Useful Commands
 
@@ -160,10 +214,15 @@ fraud_detector/                    # Single source code package
     scoring.yaml
     monitoring.yaml
   pipelines/
-    training_pipeline.py            # KFP: FE → Train → Evaluate → Register
-    scoring_pipeline.py             # KFP: FE → Predict → Write
+    training_pipeline.py            # KFP: FE -> Train -> Evaluate -> Register -> Monitor
+    scoring_pipeline.py             # KFP: FE -> Predict -> Write
     submit_pipeline.py              # CLI: --local, --compile-only, --schedule-only
     components/                     # Individual @dsl.component definitions
+      feature_engineering_op.py
+      train_op.py
+      evaluate_op.py
+      register_op.py
+      monitoring_op.py
 
 scripts/                           # setup_data.py, test_e2e.py
 tests/                             # unit + integration tests

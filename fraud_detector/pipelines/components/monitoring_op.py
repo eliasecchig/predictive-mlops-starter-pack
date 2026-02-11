@@ -47,10 +47,15 @@ def setup_monitoring_op(
 
     try:
         from google.cloud import aiplatform
-        from vertexai.resources.preview.ml_monitoring import (
-            ModelMonitor,
+        from vertexai.resources.preview.ml_monitoring import ModelMonitor
+        from vertexai.resources.preview.ml_monitoring.spec import (
+            DataDriftSpec,
+            FieldSchema,
             ModelMonitoringSchema,
-            spec as monitoring_spec,
+            MonitoringInput,
+            NotificationSpec,
+            OutputSpec,
+            TabularObjective,
         )
 
         from fraud_detector import FraudDetector
@@ -59,17 +64,23 @@ def setup_monitoring_op(
 
         # Build schema: all feature columns are float, plus prediction field
         feature_cols = FraudDetector.feature_columns()
-        feature_fields = {col: "float" for col in feature_cols}
-        feature_fields["fraud_probability"] = "float"
+        feature_schemas = [FieldSchema(name=col, data_type="float") for col in feature_cols]
+        feature_schemas.append(FieldSchema(name="fraud_probability", data_type="float"))
 
         schema = ModelMonitoringSchema(
-            feature_fields=feature_fields,
-            prediction_fields={"fraud_prediction": "integer"},
+            feature_fields=feature_schemas,
+            prediction_fields=[FieldSchema(name="fraud_prediction", data_type="integer")],
         )
 
-        # Extract model ID from resource name for display name
-        # Format: projects/.../models/<model_id> or projects/.../models/<model_id>/versions/<ver>
-        model_id = model_resource_name.split("/models/")[-1].split("/")[0]
+        # Extract model ID and version from resource name
+        # register_op returns: projects/.../models/<model_id> (unversioned)
+        # or projects/.../models/<model_id>@<version>
+        model_suffix = model_resource_name.split("/models/")[-1]
+        if "@" in model_suffix:
+            model_id, model_version = model_suffix.split("@", 1)
+        else:
+            model_id = model_suffix.split("/")[0]
+            model_version = "1"
         monitor_display_name = f"fraud-detector-monitor-{model_id}"
 
         # Clean up any existing monitor with the same display name
@@ -78,7 +89,7 @@ def setup_monitoring_op(
         )
         for old_monitor in existing_monitors:
             logger.info("Deleting existing monitor: %s", old_monitor.name)
-            old_monitor.delete()
+            old_monitor.delete(force=True)
 
         # Create model monitor
         monitor = ModelMonitor.create(
@@ -86,49 +97,34 @@ def setup_monitoring_op(
             location=region,
             display_name=monitor_display_name,
             model_name=model_resource_name,
+            model_version_id=model_version,
             model_monitoring_schema=schema,
         )
         logger.info("Model monitor created: %s", monitor.name)
-
-        # Configure data drift detection spec
-        drift_spec = monitoring_spec.DataDriftSpec(
-            default_categorical_alert_condition=monitoring_spec.AlertCondition(
-                threshold=default_drift_threshold,
-            ),
-            default_numeric_alert_condition=monitoring_spec.AlertCondition(
-                threshold=default_drift_threshold,
-            ),
-        )
-
-        # Parse email list
-        emails = [e.strip() for e in alert_emails.split(",") if e.strip()]
-        notification_spec = monitoring_spec.NotificationSpec(
-            email_config=monitoring_spec.EmailConfig(user_emails=emails),
-        )
 
         # BigQuery data sources
         baseline_uri = f"bq://{project_id}.{bq_dataset}.{feature_table}"
         target_uri = f"bq://{project_id}.{bq_dataset}.{predictions_table}"
 
-        output_spec = monitoring_spec.OutputSpec(
-            gcs_base_dir=f"gs://{project_id}-fraud-detector-pipeline-root/monitoring",
-        )
+        # Parse email list
+        emails = [e.strip() for e in alert_emails.split(",") if e.strip()]
 
         # Create scheduled monitoring run
         monitor.create_schedule(
             display_name=f"{monitor_display_name}-schedule",
             cron=monitoring_schedule,
-            baseline_dataset=monitoring_spec.MonitoringInput(
-                endpoints=[],
-                batch_input=monitoring_spec.BatchInput(bigquery_uri=baseline_uri),
+            baseline_dataset=MonitoringInput(table_uri=baseline_uri),
+            target_dataset=MonitoringInput(table_uri=target_uri),
+            tabular_objective_spec=TabularObjective(
+                feature_drift_spec=DataDriftSpec(
+                    default_numeric_alert_threshold=default_drift_threshold,
+                    default_categorical_alert_threshold=default_drift_threshold,
+                ),
             ),
-            target_dataset=monitoring_spec.MonitoringInput(
-                endpoints=[],
-                batch_input=monitoring_spec.BatchInput(bigquery_uri=target_uri),
+            notification_spec=NotificationSpec(user_emails=emails),
+            output_spec=OutputSpec(
+                gcs_base_dir=f"gs://{project_id}-fraud-detector-pipeline-root/monitoring",
             ),
-            data_drift_spec=drift_spec,
-            notification_spec=notification_spec,
-            output_spec=output_spec,
         )
         logger.info("Monitoring schedule created for %s", monitor.name)
 
