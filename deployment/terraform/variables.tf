@@ -91,5 +91,6 @@ variable "pipelines_roles" {
     "roles/bigquery.jobUser",
     "roles/bigquery.readSessionUser",
     "roles/artifactregistry.writer",
+    "roles/logging.logWriter",
   ]
 }
