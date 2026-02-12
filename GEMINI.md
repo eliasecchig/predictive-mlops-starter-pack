@@ -130,15 +130,35 @@ labels={"auc_roc": str(round(auc_roc, 4)).replace(".", "_")}
 - KFP type checking is strict: if a pipeline parameter is `float`, you must pass `float(value)` — an `int` from YAML config will fail with `InconsistentTypeException`
 - `EXPORT DATA` in BigQuery requires wildcard URIs (`gs://bucket/path/*.parquet`)
 
-### KFP component code — custom container approach
-KFP components use a custom Docker image (`fraud-detector-docker`) that has the full `fraud_detector` package pre-installed. This means:
-- **No `packages_to_install`** — everything is in the image, so startup is fast
-- **No code duplication** — components are thin wrappers that import from the library
-- **No runtime pip installs** — all dependencies are baked into the image
-- The image URI is constructed from env vars: `{REGION}-docker.pkg.dev/{CICD_PROJECT_ID}/fraud-detector-docker/fraud-detector:{IMAGE_TAG}`
-- For local execution (`SubprocessRunner(use_venv=False)`), the base_image is ignored — it just imports from the local env
-- CI/CD builds the image with `gcloud builds submit` and tags it with the git SHA
-- For dev, use `make build-image` (requires Docker + Artifact Registry repo)
+### KFP component code — deps image + AR wheel approach
+KFP components use a two-layer approach:
+1. **Base image** (`fraud-detector-docker`) — deps-only, rebuilt only when `Dockerfile`/`pyproject.toml`/`uv.lock` change
+2. **Code wheel** (`fraud-detector` package) — published to Artifact Registry Python repo, installed at component startup via `packages_to_install`
+
+The `pipeline_component()` decorator in `fraud_detector/pipelines/__init__.py` wraps `dsl.component()` and sets:
+- `base_image=get_base_image()` — the deps-only container
+- `install_kfp_package=False`
+- `packages_to_install=["--no-deps", "fraud-detector=={CODE_VERSION}"]` — installs the wheel without resolving deps (all deps are in the base image)
+- `pip_index_urls=[get_ar_index_url()]` — points to the AR Python repo only (no PyPI, avoids dependency confusion)
+
+Usage in component files:
+```python
+from fraud_detector.pipelines import pipeline_component
+
+@pipeline_component()
+def my_component_op(...):
+    ...
+```
+
+**`ensure_deps_image()`** — hashes `Dockerfile`, `pyproject.toml`, `uv.lock` → tags image → builds only if tag is missing in AR Docker repo.
+
+**`ensure_code_package()`** — hashes `fraud_detector/**/*.py` → builds wheel as `0.1.0+{hash}` → uploads to AR Python repo if version is missing. Each developer's code change produces a unique hash → no collisions.
+
+One-time setup: `make setup-ar-python` creates the AR Python repo.
+
+- For local execution (`SubprocessRunner(use_venv=False)`), `packages_to_install` is ignored — it just imports from the local env
+- CI/CD builds the deps image and uploads the wheel
+- For dev, use `make build-image` (deps-only, requires Docker + AR Docker repo)
 
 ### Rolling features performance
 The optimized pattern for pandas rolling window features with groupby uses direct `.values` assignment instead of merge:
@@ -169,6 +189,45 @@ Pipeline code uses `{project_id}-fraud-detector-artifacts` and `{project_id}-fra
 
 ### GitHub provider in Terraform
 Terraform handles GitHub Actions secrets/variables automatically via `github_actions_secret` and `github_actions_variable` resources. Requires `GITHUB_TOKEN` env var and the `integrations/github` provider. No manual secret configuration needed.
+
+### KFP base_image must be a function call
+`BASE_IMAGE = get_base_image()` at module level gets evaluated at import time — before `IMAGE_TAG` is set by `ensure_deps_image()`. Use `pipeline_component()` which calls `get_base_image()` at decoration time. The same applies to `CODE_VERSION` — `get_code_package()` reads the env var at call time.
+
+### enable_caching is a PipelineJob arg
+`enable_caching` is a `PipelineJob` constructor argument, not a pipeline parameter. KFP silently ignores it if you pass it in `parameter_values`.
+
+### Model file naming for Vertex AI serving
+sklearn serving container requires `model.joblib` or `model.pkl` filename. KFP's `dsl.Output[dsl.Model]` gives you `model.path` which is just `model` (no extension). Vertex AI Model Registry rejects it. Save to `os.path.dirname(model.path) + "/model.joblib"` and update evaluate_op to load from the same path.
+
+### artifact_uri must be a GCS directory
+`Model.upload()` expects `artifact_uri` to be a GCS directory containing the model file, not a file path.
+
+### Metadata store initialization
+Vertex AI Metadata store must exist before the first pipeline submission. New projects need initialization — creating a throwaway `Experiment` triggers it.
+
+### Cross-project Artifact Registry access for Vertex AI
+Each project has a Vertex AI Service Agent (`service-{PROJECT_NUMBER}@gcp-sa-aiplatform-cc.iam.gserviceaccount.com`) that pulls container images. It needs `roles/artifactregistry.reader` on the CI/CD project's Docker repo.
+
+### Cloud Build log streaming with WIF
+`gcloud builds submit` can't stream logs with Workload Identity Federation auth. The federated token can submit builds but can't read from the default Cloud Logging bucket. Fix: use `--async` and poll with `gcloud builds describe`.
+
+### Pipeline service account must be explicit
+Pipeline SA must be passed explicitly via `job.submit(service_account=...)` when submitting cross-project. Without it, the default compute SA is used, which lacks permissions.
+
+### IAM role string splitting
+IAM role splitting with `/` as separator breaks on `roles/foo.bar`. `split("/", "staging/roles/aiplatform.user")[1]` returns `"roles"` not `"roles/aiplatform.user"`. Use `:` as separator instead.
+
+### Pipeline SA needs logging permissions
+Pipeline SA needs `roles/logging.logWriter` or container logs silently disappear, making debugging impossible.
+
+### ARM Mac to AMD64 for Vertex AI
+Standard `docker build` on ARM Mac produces ARM images. Vertex AI requires AMD64. Install the buildx plugin, create a multiarch builder, use `--platform linux/amd64 --push`.
+
+### Container dependency groups
+The container needs `--extra pipelines` in `uv sync`. KFP is in optional dependencies — the container runs without it and gets `No module named 'kfp'`.
+
+### Pipeline execution order on first deploy
+Scoring pipeline must run after training on first deploy. `predict-op` looks up the latest registered model — if training hasn't finished, there's no model to find. In production, the schedules handle this naturally (training weekly, scoring every 6h).
 
 ## Guidelines for Code Changes
 

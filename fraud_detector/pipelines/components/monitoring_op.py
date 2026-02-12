@@ -1,11 +1,9 @@
 """KFP component — Vertex AI Model Monitoring v2 setup."""
 
-from kfp import dsl
-
-from fraud_detector.pipelines import get_base_image
+from fraud_detector.pipelines import pipeline_component
 
 
-@dsl.component(base_image=get_base_image(), install_kfp_package=False)
+@pipeline_component()
 def setup_monitoring_op(
     project_id: str,
     region: str,

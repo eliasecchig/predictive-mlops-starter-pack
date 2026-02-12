@@ -3,7 +3,7 @@
        submit-training submit-scoring \
        schedule-training schedule-scoring \
        setup-data setup-dev-env setup-prod \
-       build-image
+       build-image setup-ar-python publish-wheel
 
 REGION ?= us-central1
 IMAGE_TAG ?= latest
@@ -64,13 +64,33 @@ setup-data:
 setup-data-full:
 	uv run python scripts/setup_data.py --full
 
-# ── Container Image ─────────────────────────────────────────────────────────
+# ── Container Image (deps-only) ─────────────────────────────────────────────
 build-image:
 	@CICD_PROJECT=$${CICD_PROJECT_ID:-$$PROJECT_ID}; \
 	IMAGE_URI=$(REGION)-docker.pkg.dev/$$CICD_PROJECT/fraud-detector-docker/fraud-detector:$(IMAGE_TAG); \
-	echo "Building $$IMAGE_URI..."; \
+	echo "Building deps-only image $$IMAGE_URI..."; \
 	docker buildx build --platform linux/amd64 -t $$IMAGE_URI --push . && \
 	echo "Done: $$IMAGE_URI"
+
+# ── Artifact Registry Python Repo ──────────────────────────────────────────
+setup-ar-python:
+	@CICD_PROJECT=$${CICD_PROJECT_ID:-$$PROJECT_ID}; \
+	gcloud artifacts repositories create fraud-detector-python \
+		--repository-format=python \
+		--location=$(REGION) \
+		--project=$$CICD_PROJECT \
+		--description="fraud-detector Python wheels" 2>/dev/null || \
+	echo "Repository fraud-detector-python already exists"
+
+publish-wheel:
+	@uv build --wheel --out-dir dist && \
+	CICD_PROJECT=$${CICD_PROJECT_ID:-$$PROJECT_ID}; \
+	TOKEN=$$(gcloud auth print-access-token); \
+	uv publish \
+		--publish-url "https://$(REGION)-python.pkg.dev/$$CICD_PROJECT/fraud-detector-python/" \
+		--username oauth2accesstoken \
+		--password "$$TOKEN" \
+		dist/fraud_detector-*.whl
 
 # ── Infrastructure ───────────────────────────────────────────────────────────
 setup-dev-env:

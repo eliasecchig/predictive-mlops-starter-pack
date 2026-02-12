@@ -2,10 +2,10 @@
 
 from kfp import dsl
 
-from fraud_detector.pipelines import get_base_image
+from fraud_detector.pipelines import pipeline_component
 
 
-@dsl.component(base_image=get_base_image(), install_kfp_package=False)
+@pipeline_component()
 def predict_op(
     project_id: str,
     region: str,
@@ -14,6 +14,7 @@ def predict_op(
     predictions_table: str,
     model_display_name: str,
     read_unscored_sql: str,
+    scoring_metrics: dsl.Output[dsl.Metrics],
 ) -> int:
     """Load latest model from registry, score feature data, return count of scored rows."""
     import logging
@@ -44,6 +45,7 @@ def predict_op(
     logger.info("Loaded %d unscored rows", len(df))
 
     if df.empty:
+        scoring_metrics.log_metric("rows_scored", 0)
         return 0
 
     # Load model from Vertex AI Model Registry
@@ -84,5 +86,10 @@ def predict_op(
     job = client.load_table_from_dataframe(df[output_cols], table_ref, job_config=job_config)
     job.result()
     logger.info("Predictions written to %s", table_ref)
+
+    # Log scoring stats
+    scoring_metrics.log_metric("rows_scored", len(df))
+    scoring_metrics.log_metric("avg_fraud_probability", float(df["fraud_probability"].mean()))
+    scoring_metrics.log_metric("fraud_rate_predicted", float(df["fraud_prediction"].mean()))
 
     return len(df)

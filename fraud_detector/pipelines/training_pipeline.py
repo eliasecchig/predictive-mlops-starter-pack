@@ -2,6 +2,7 @@
 
 from kfp import dsl
 
+from fraud_detector.pipelines.components.data_profile_op import data_profile_op
 from fraud_detector.pipelines.components.evaluate_op import evaluate_op
 from fraud_detector.pipelines.components.feature_engineering_op import feature_engineering_op
 from fraud_detector.pipelines.components.monitoring_op import setup_monitoring_op
@@ -40,7 +41,16 @@ def training_pipeline(
         read_raw_sql=read_raw_sql,
     )
 
-    # Step 2: Train model (outputs dsl.Model artifact, stored by Vertex)
+    # Step 2a: Data profiling (runs in parallel with training)
+    data_profile_op(
+        project_id=project_id,
+        bq_dataset=bq_dataset,
+        feature_table=feature_table,
+        split_date=split_date,
+        read_features_sql=read_features_sql,
+    ).after(fe_task)
+
+    # Step 2b: Train model (outputs dsl.Model artifact, stored by Vertex)
     train_task = train_op(
         project_id=project_id,
         bq_dataset=bq_dataset,
@@ -69,7 +79,7 @@ def training_pipeline(
         region=region,
         model_display_name=model_display_name,
         model=train_task.outputs["model"],
-        auc_roc=eval_task.output,
+        auc_roc=eval_task.outputs["Output"],
         threshold_auc=threshold_auc,
     ).after(eval_task)
 

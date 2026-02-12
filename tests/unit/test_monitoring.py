@@ -9,14 +9,17 @@ import pytest
 def _mock_vertexai():
     """Mock all Vertex AI / monitoring imports used by setup_monitoring_op."""
     with (
-        patch.dict("sys.modules", {
-            "google.cloud.aiplatform": MagicMock(),
-            "vertexai": MagicMock(),
-            "vertexai.resources": MagicMock(),
-            "vertexai.resources.preview": MagicMock(),
-            "vertexai.resources.preview.ml_monitoring": MagicMock(),
-            "vertexai.resources.preview.ml_monitoring.spec": MagicMock(),
-        }),
+        patch.dict(
+            "sys.modules",
+            {
+                "google.cloud.aiplatform": MagicMock(),
+                "vertexai": MagicMock(),
+                "vertexai.resources": MagicMock(),
+                "vertexai.resources.preview": MagicMock(),
+                "vertexai.resources.preview.ml_monitoring": MagicMock(),
+                "vertexai.resources.preview.ml_monitoring.spec": MagicMock(),
+            },
+        ),
     ):
         yield
 

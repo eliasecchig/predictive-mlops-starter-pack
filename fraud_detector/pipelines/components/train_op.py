@@ -2,10 +2,10 @@
 
 from kfp import dsl
 
-from fraud_detector.pipelines import get_base_image
+from fraud_detector.pipelines import pipeline_component
 
 
-@dsl.component(base_image=get_base_image(), install_kfp_package=False)
+@pipeline_component()
 def train_op(
     project_id: str,
     bq_dataset: str,
@@ -53,4 +53,12 @@ def train_op(
     artifact_dir = os.path.dirname(model.path)
     os.makedirs(artifact_dir, exist_ok=True)
     fd.save_model(os.path.join(artifact_dir, "model.joblib"))
+
+    # Model metadata
     model.metadata["framework"] = "xgboost"
+    for k, v in xgb_params.items():
+        model.metadata[k] = v
+    model.metadata["train_samples"] = len(train_df)
+    model.metadata["feature_count"] = len(fd.feature_columns())
+    fraud_rate = train_df["tx_fraud"].mean() if "tx_fraud" in train_df.columns else 0.0
+    model.metadata["fraud_rate"] = float(fraud_rate)

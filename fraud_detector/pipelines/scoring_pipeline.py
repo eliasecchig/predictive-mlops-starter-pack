@@ -45,5 +45,5 @@ def scoring_pipeline(
         project_id=project_id,
         bq_dataset=bq_dataset,
         predictions_table=predictions_table,
-        scored_count=predict_task.output,
+        scored_count=predict_task.outputs["Output"],
     ).after(predict_task)

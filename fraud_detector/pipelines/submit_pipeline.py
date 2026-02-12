@@ -9,29 +9,44 @@ from pathlib import Path
 from fraud_detector.config import load_config, load_sql
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+VERSION_FILE = PROJECT_ROOT / "fraud_detector" / "_version.py"
 
 
 # ---------------------------------------------------------------------------
-# Container image management
+# Hashing helpers
 # ---------------------------------------------------------------------------
 
 
-def _compute_source_hash() -> str:
-    """Compute a content-based hash of source files for image tagging.
+def _compute_deps_hash() -> str:
+    """Compute a content-based hash of dependency files for image tagging.
 
-    Hashes Dockerfile, pyproject.toml, uv.lock, and all Python source files
-    under fraud_detector/. If any of these change, the hash changes and a
-    new image is built.
+    Hashes Dockerfile, pyproject.toml, and uv.lock only.  The base image
+    only needs to be rebuilt when dependencies change.
     """
     h = hashlib.sha256()
     for name in ["Dockerfile", "pyproject.toml", "uv.lock"]:
         path = PROJECT_ROOT / name
         if path.exists():
             h.update(path.read_bytes())
+    return h.hexdigest()[:12]
+
+
+def _compute_code_hash() -> str:
+    """Compute a content-based hash of Python source files.
+
+    Used for the wheel version suffix so each code change gets a unique
+    version in Artifact Registry.
+    """
+    h = hashlib.sha256()
     for path in sorted(PROJECT_ROOT.glob("fraud_detector/**/*.py")):
         h.update(str(path.relative_to(PROJECT_ROOT)).encode())
         h.update(path.read_bytes())
     return h.hexdigest()[:12]
+
+
+# ---------------------------------------------------------------------------
+# Container image management (deps-only)
+# ---------------------------------------------------------------------------
 
 
 def _get_image_uri(tag: str) -> str:
@@ -88,18 +103,17 @@ def _build_and_push(image_uri: str) -> None:
     print(f"Image ready: {image_uri}")
 
 
-def ensure_image() -> None:
-    """Ensure the pipeline container image is built and pushed.
+def ensure_deps_image() -> None:
+    """Ensure the deps-only container image is built and pushed.
 
     - If IMAGE_TAG is already set (CI/CD), uses it as-is — no build.
-    - Otherwise computes a content hash, checks Artifact Registry,
+    - Otherwise computes a deps hash, checks Artifact Registry,
       and builds only if the image doesn't exist yet.
-    - Prefers local Docker over Cloud Build for speed.
     """
     if os.environ.get("IMAGE_TAG"):
         return  # CI/CD already built and tagged the image
 
-    tag = _compute_source_hash()
+    tag = _compute_deps_hash()
     image_uri = _get_image_uri(tag)
 
     if _image_exists(image_uri):
@@ -109,6 +123,104 @@ def ensure_image() -> None:
 
     # Set for BASE_IMAGE resolution when pipeline modules are imported
     os.environ["IMAGE_TAG"] = tag
+
+
+# ---------------------------------------------------------------------------
+# Code package management (wheel → Artifact Registry Python repo)
+# ---------------------------------------------------------------------------
+
+
+def _get_ar_repo_url() -> str:
+    """Return the AR Python repo upload URL."""
+    region = os.environ.get("REGION", "us-central1")
+    project = os.environ.get("CICD_PROJECT_ID") or os.environ.get("PROJECT_ID", "")
+    return f"https://{region}-python.pkg.dev/{project}/fraud-detector-python/"
+
+
+def _wheel_exists(version: str) -> bool:
+    """Check if a wheel version already exists in Artifact Registry."""
+    region = os.environ.get("REGION", "us-central1")
+    project = os.environ.get("CICD_PROJECT_ID") or os.environ.get("PROJECT_ID", "")
+    # Use only the hash suffix in the filter to avoid regex issues with '+'
+    hash_suffix = version.split("+")[-1] if "+" in version else version
+    result = subprocess.run(
+        [
+            "gcloud",
+            "artifacts",
+            "versions",
+            "list",
+            "--repository=fraud-detector-python",
+            f"--location={region}",
+            f"--project={project}",
+            "--package=fraud-detector",
+            f"--filter=name~{hash_suffix}",
+            "--format=value(name)",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and version in result.stdout
+
+
+def ensure_code_package() -> None:
+    """Build and upload the fraud-detector wheel to Artifact Registry.
+
+    - Computes a hash of all Python source files.
+    - If CODE_VERSION is already set (CI/CD), uses it as-is.
+    - Otherwise checks if the version exists in AR; if not, builds
+      and uploads the wheel.
+    - Temporarily patches ``_version.py`` with ``0.1.0+{hash}``
+      during the build, then restores the original.
+    """
+    if os.environ.get("CODE_VERSION"):
+        return  # CI/CD already built and uploaded
+
+    code_hash = _compute_code_hash()
+    version = f"0.1.0+{code_hash}"
+
+    if _wheel_exists(version):
+        print(f"Code package up to date: fraud-detector=={version}")
+    else:
+        # Temporarily patch _version.py
+        original = VERSION_FILE.read_text()
+        try:
+            VERSION_FILE.write_text(f'__version__ = "{version}"\n')
+
+            # Build wheel
+            subprocess.run(
+                ["uv", "build", "--wheel", "--out-dir", str(PROJECT_ROOT / "dist")],
+                check=True,
+                cwd=str(PROJECT_ROOT),
+            )
+
+            # Upload to AR using gcloud credentials
+            upload_url = _get_ar_repo_url()
+            token = subprocess.run(
+                ["gcloud", "auth", "print-access-token"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            subprocess.run(
+                [
+                    "uv",
+                    "publish",
+                    "--publish-url",
+                    upload_url,
+                    "--username",
+                    "oauth2accesstoken",
+                    "--password",
+                    token,
+                    str(PROJECT_ROOT / "dist" / f"fraud_detector-{version}-py3-none-any.whl"),
+                ],
+                check=True,
+                cwd=str(PROJECT_ROOT),
+            )
+            print(f"Code package uploaded: fraud-detector=={version}")
+        finally:
+            VERSION_FILE.write_text(original)
+
+    os.environ["CODE_VERSION"] = version
 
 
 # ---------------------------------------------------------------------------
@@ -178,9 +290,7 @@ def run_local(pipeline_name: str, config: dict) -> None:
             learning_rate=xgb_params.get("learning_rate", 0.1),
             scale_pos_weight=float(xgb_params.get("scale_pos_weight", 10.0)),
             alert_emails=",".join(monitoring_config.get("alert_emails", [])),
-            default_drift_threshold=float(
-                min(monitoring_config.get("drift_thresholds", {}).values() or [0.3])
-            ),
+            default_drift_threshold=float(min(monitoring_config.get("drift_thresholds", {}).values() or [0.3])),
             predictions_table=monitoring_config.get("predictions_table", "fraud_scores"),
             monitoring_schedule=monitoring_config.get("schedule", "0 8 * * 1"),
         )
@@ -204,13 +314,15 @@ def submit_to_vertex(
     config: dict,
     schedule_only: bool = False,
     cron_schedule: str | None = None,
+    experiment: str | None = None,
 ) -> None:
     """Submit a compiled pipeline to Vertex AI."""
     from google.cloud import aiplatform
 
     project_id = config["project_id"]
     region = config["region"]
-    aiplatform.init(project=project_id, location=region)
+    experiment_name = experiment or f"fraud-{pipeline_name}-experiment"
+    aiplatform.init(project=project_id, location=region, experiment=experiment_name)
 
     compiled_path = compile_pipeline(pipeline_name)
     sql = _resolve_sql(config)
@@ -235,9 +347,7 @@ def submit_to_vertex(
             "learning_rate": xgb_params.get("learning_rate", 0.1),
             "scale_pos_weight": xgb_params.get("scale_pos_weight", 10.0),
             "alert_emails": ",".join(monitoring_config.get("alert_emails", [])),
-            "default_drift_threshold": float(
-                min(monitoring_config.get("drift_thresholds", {}).values() or [0.3])
-            ),
+            "default_drift_threshold": float(min(monitoring_config.get("drift_thresholds", {}).values() or [0.3])),
             "predictions_table": monitoring_config.get("predictions_table", "fraud_scores"),
             "monitoring_schedule": monitoring_config.get("schedule", "0 8 * * 1"),
         }
@@ -282,8 +392,8 @@ def submit_to_vertex(
             parameter_values=params,
             enable_caching=caching,
         )
-        job.submit(service_account=pipeline_sa)
-        print(f"Pipeline submitted: {display_name}")
+        job.submit(service_account=pipeline_sa, experiment=experiment_name)
+        print(f"Pipeline submitted: {display_name} (experiment: {experiment_name})")
 
 
 def main():
@@ -293,20 +403,30 @@ def main():
     parser.add_argument("--schedule-only", action="store_true", help="Create/update schedule without running")
     parser.add_argument("--cron-schedule", type=str, help="Override cron schedule")
     parser.add_argument("--compile-only", action="store_true", help="Compile pipeline without submitting")
+    parser.add_argument("--experiment", type=str, help="Vertex AI experiment name (default: fraud-detector-{pipeline})")
     args = parser.parse_args()
 
     config = load_config(args.pipeline)
 
     if args.compile_only:
-        # Set IMAGE_TAG for correct image URI in compiled output, but don't build
+        # Set IMAGE_TAG and CODE_VERSION from hashes for correct URIs in compiled output
         if not os.environ.get("IMAGE_TAG"):
-            os.environ["IMAGE_TAG"] = _compute_source_hash()
+            os.environ["IMAGE_TAG"] = _compute_deps_hash()
+        if not os.environ.get("CODE_VERSION"):
+            os.environ["CODE_VERSION"] = f"0.1.0+{_compute_code_hash()}"
         compile_pipeline(args.pipeline)
     elif args.local:
         run_local(args.pipeline, config)
     else:
-        ensure_image()  # Build + push if needed, sets IMAGE_TAG
-        submit_to_vertex(args.pipeline, config, schedule_only=args.schedule_only, cron_schedule=args.cron_schedule)
+        ensure_deps_image()  # Build + push deps image if needed, sets IMAGE_TAG
+        ensure_code_package()  # Build + upload wheel if needed, sets CODE_VERSION
+        submit_to_vertex(
+            args.pipeline,
+            config,
+            schedule_only=args.schedule_only,
+            cron_schedule=args.cron_schedule,
+            experiment=args.experiment,
+        )
 
 
 if __name__ == "__main__":
