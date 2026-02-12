@@ -8,6 +8,7 @@ import yaml
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 SQL_DIR = CONFIG_DIR / "sql"
 
+print("hello")
 
 def load_config(config_name: str) -> dict:
     """Load a YAML config file from the config/ directory.
