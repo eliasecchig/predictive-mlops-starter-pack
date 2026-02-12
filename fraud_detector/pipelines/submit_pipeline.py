@@ -82,7 +82,7 @@ def _build_and_push(image_uri: str) -> None:
     cicd_project = os.environ.get("CICD_PROJECT_ID") or os.environ.get("PROJECT_ID", "")
 
     if _docker_available():
-        print(f"Building with Docker: {image_uri}")
+        print(f"  Building with Docker: {image_uri}")
         subprocess.run(
             ["gcloud", "auth", "configure-docker", registry, "--quiet"],
             check=True,
@@ -93,13 +93,13 @@ def _build_and_push(image_uri: str) -> None:
             check=True,
         )
     else:
-        print(f"Building with Cloud Build: {image_uri}")
+        print(f"  Building with Cloud Build: {image_uri}")
         subprocess.run(
             ["gcloud", "builds", "submit", "--tag", image_uri, "--project", cicd_project, "--quiet", str(PROJECT_ROOT)],
             check=True,
         )
 
-    print(f"Image ready: {image_uri}")
+    print(f"  Image pushed: {image_uri}")
 
 
 def ensure_deps_image() -> None:
@@ -114,15 +114,16 @@ def ensure_deps_image() -> None:
     if os.environ.get("IMAGE_TAG"):
         return  # CI/CD already built and tagged the image
 
+    print("Step 1/3: Deps image")
     tag = _compute_deps_hash()
     image_uri = _get_image_uri(tag)
 
     # Fast path: local cache says this tag was already pushed
     cached_tag = _DEPS_TAG_CACHE.read_text().strip() if _DEPS_TAG_CACHE.exists() else ""
     if cached_tag == tag:
-        print(f"Image up to date: {image_uri}")
+        print(f"  Up to date ({tag[:12]})")
     elif _image_exists(image_uri):
-        print(f"Image up to date: {image_uri}")
+        print(f"  Up to date ({tag[:12]})")
         _DEPS_TAG_CACHE.write_text(tag)
     else:
         _build_and_push(image_uri)
@@ -185,8 +186,9 @@ def ensure_code_package() -> None:
     code_hash = _compute_code_hash()
     version = f"0.1.0+{code_hash}"
 
+    print("Step 2/3: Code package")
     if _wheel_exists(version):
-        print(f"Code package up to date: fraud-detector=={version}")
+        print(f"  Up to date (fraud-detector=={version})")
     else:
         # Temporarily patch _version.py
         original = VERSION_FILE.read_text()
@@ -223,7 +225,7 @@ def ensure_code_package() -> None:
                 check=True,
                 cwd=str(PROJECT_ROOT),
             )
-            print(f"Code package uploaded: fraud-detector=={version}")
+            print(f"  Uploaded fraud-detector=={version}")
         finally:
             VERSION_FILE.write_text(original)
 
@@ -265,7 +267,7 @@ def compile_pipeline(pipeline_name: str) -> str:
 
     output_path = f"{pipeline_name}_pipeline.json"
     compiler.Compiler().compile(pipeline_func=pipeline_func, package_path=output_path)
-    print(f"Pipeline compiled: {output_path}")
+    print(f"  Compiled: {output_path}")
     return output_path
 
 
@@ -375,6 +377,8 @@ def submit_to_vertex(
     display_name = config.get("pipeline_name", f"fraud-detector-{pipeline_name}")
     pipeline_sa = os.environ.get("PIPELINE_SA_EMAIL")
 
+    print("Step 3/3: Submit to Vertex AI")
+
     if schedule_only:
         schedule = cron_schedule or config.get("schedule", "0 2 * * 0")
 
@@ -391,7 +395,7 @@ def submit_to_vertex(
             cron=schedule,
             service_account=pipeline_sa,
         )
-        print(f"Schedule created: {display_name} -- cron: {schedule}")
+        print(f"  Schedule created: {display_name} (cron: {schedule})")
     else:
         job = aiplatform.PipelineJob(
             display_name=display_name,
@@ -402,9 +406,15 @@ def submit_to_vertex(
         )
         job.submit(service_account=pipeline_sa, experiment=experiment_name)
         job_id = job.resource_name.split("/")[-1]
-        url = f"https://console.cloud.google.com/vertex-ai/pipelines/locations/{region}/runs/{job_id}?project={project_id}"
-        print(f"Pipeline submitted: {display_name} (experiment: {experiment_name})")
-        print(url)
+        console = "https://console.cloud.google.com/vertex-ai"
+        run_url = f"{console}/pipelines/locations/{region}/runs/{job_id}?project={project_id}"
+        experiment_url = (
+            f"{console}/experiments/locations/{region}/experiments/{experiment_name}/runs?project={project_id}"
+        )
+        print(f"  Submitted: {display_name}")
+        print()
+        print(f"  Pipeline run:  {run_url}")
+        print(f"  Experiment:    {experiment_url}")
 
 
 def main():
