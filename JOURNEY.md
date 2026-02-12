@@ -86,7 +86,10 @@ make lint
 make submit-training
 ```
 
-This builds the container image (content-hash tagged), compiles the KFP pipeline, and submits to Vertex AI.
+This uses a two-layer build approach for fast iteration:
+1. **Deps image** — hashes `Dockerfile` + `pyproject.toml` + `uv.lock` into a content-based tag. Checks a local cache file (`.deps-image-tag`) first — if the hash matches, skips the registry check entirely. Only builds when dependencies actually change.
+2. **Code wheel** — hashes `fraud_detector/**/*.py`, builds a wheel (`~27KB`), and uploads to Artifact Registry Python repo. Each code change gets a unique version.
+3. **Compile + submit** — compiles the KFP pipeline and submits to Vertex AI. The console URL is printed after submission so you can follow the run in your browser.
 
 ### Verified output
 

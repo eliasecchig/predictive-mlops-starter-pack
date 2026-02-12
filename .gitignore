@@ -64,5 +64,8 @@ service-account-key.json
 # Reference repos
 example_repos/
 
+# Local build caches
+.deps-image-tag
+
 # uv
 .python-version

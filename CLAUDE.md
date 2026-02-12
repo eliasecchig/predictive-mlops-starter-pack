@@ -51,118 +51,7 @@ notebooks/                          # Exploratory notebook
 
 `fraud_detector/config.py` resolves the config path via `Path(__file__).parent / "config"`.
 
-## Step-by-Step Journey
-
-Use this section to guide a data scientist from clone to production.
-
-### Step 1: Clone & Install
-
-```bash
-git clone <repo-url>
-cd predictive_mlops_demo
-make install
-```
-
-Installs all dependencies (including pipelines, notebook, and dev extras) via `uv`.
-
-### Step 2: Authenticate to GCP
-
-```bash
-gcloud auth application-default login
-```
-
-`PROJECT_ID` is auto-detected from `gcloud` config. Override with `export PROJECT_ID=<your-project>` if needed.
-
-### Step 3: Load Data into BigQuery
-
-```bash
-make setup-data              # 10K synthetic rows (fast demo)
-make setup-data-gcs          # ~100K rows from GCS
-make setup-data-full         # ~3.1M rows full dataset
-```
-
-Default uses synthetic data (10K rows, ~2% fraud rate) for fast iteration.
-
-| Table | Rows |
-|-------|------|
-| `tx` | 10,000 |
-| `txlabels` | 10,000 |
-
-### Step 4: Run Training Pipeline Locally
-
-```bash
-make run-training-local
-```
-
-Runs the full KFP pipeline locally via `SubprocessRunner(use_venv=False)`:
-
-```
-feature-engineering-op  →  Reads raw BQ data, computes 25 rolling features, writes to BQ
-train-op                →  Trains XGBoost model, uploads artifact
-evaluate-op             →  Evaluates on holdout set, returns AUC-ROC
-register-op             →  Registers model in Vertex AI (skipped locally: LOCAL_ONLY)
-setup-monitoring-op     →  Sets up Model Monitoring (skipped locally: SKIPPED:LOCAL_ONLY)
-```
-
-Expected output: AUC-ROC ~0.888, all 5 steps SUCCESS. `register-op` and `setup-monitoring-op` skip gracefully in local mode.
-
-### Step 5: Run Tests
-
-```bash
-make test-unit
-make lint
-```
-
-15 unit tests (feature engineering, monitoring, training). All lint checks should pass.
-
-### Step 6: Submit Training Pipeline to Vertex AI
-
-```bash
-make submit-training
-```
-
-What happens under the hood:
-1. **Deps image check** — hashes `Dockerfile` + `pyproject.toml` + `uv.lock`. If the hash matches the local cache (`.deps-image-tag`), no network call. Otherwise checks AR, builds only if missing.
-2. **Code wheel** — hashes `fraud_detector/**/*.py`, builds and uploads a wheel to AR Python repo if the version is new.
-3. **Compile + submit** — compiles the KFP pipeline and submits to Vertex AI. Prints the console URL after submission.
-
-Expected Vertex AI output:
-
-| Step | Status | Output |
-|------|--------|--------|
-| `feature-engineering-op` | SUCCEEDED | Features written to BQ |
-| `train-op` | SUCCEEDED | Model artifact uploaded to GCS |
-| `evaluate-op` | SUCCEEDED | AUC-ROC ~0.888 |
-| `register-op` | SUCCEEDED | Model registered in Vertex AI Model Registry |
-| `setup-monitoring-op` | SUCCEEDED | Monitor created with weekly drift detection |
-
-### Step 7: Submit Scoring Pipeline to Vertex AI
-
-```bash
-make submit-scoring
-```
-
-Must run after training (the model needs to exist in the registry). All 3 steps should succeed: `feature-engineering-op` → `predict-op` → `write-predictions-op`. Predictions written to `fraud_detection.fraud_scores`.
-
-### Step 8: Deploy Infrastructure + CI/CD
-
-Edit `deployment/terraform/vars/env.tfvars`, then:
-
-```bash
-make setup-prod
-```
-
-Creates: WIF pool, CI/CD service accounts, pipeline SAs, GCS buckets, BQ datasets, and GitHub Actions secrets/variables for staging + prod.
-
-### Step 9: Push to Main
-
-```bash
-git push origin main
-```
-
-Triggers CI/CD: PR checks (lint + tests) → staging deploy → manual prod deploy.
-
-## Development Workflow (day-to-day)
+## Development Workflow
 
 1. **Edit code** in `fraud_detector/`
 2. **Run tests**: `make test-unit`
@@ -261,12 +150,7 @@ def my_component_op(...):
     ...
 ```
 
-**`ensure_deps_image()`** — hashes `Dockerfile`, `pyproject.toml`, `uv.lock` → 12-char content tag. Uses a three-tier check:
-1. **Local cache** (`.deps-image-tag` file) — if the computed hash matches the cached tag, skip everything (instant, no network)
-2. **AR registry check** (`gcloud artifacts docker images describe`) — if the image exists remotely, cache the tag locally and skip the build
-3. **Build + push** — only when the tag is genuinely missing from AR
-
-This means the common case (code-only changes, deps unchanged) has zero overhead from the image check.
+**`ensure_deps_image()`** — hashes `Dockerfile`, `pyproject.toml`, `uv.lock` → tags image → builds only if tag is missing in AR Docker repo.
 
 **`ensure_code_package()`** — hashes `fraud_detector/**/*.py` → builds wheel as `0.1.0+{hash}` → uploads to AR Python repo if version is missing. Each developer's code change produces a unique hash → no collisions.
 
@@ -275,9 +159,6 @@ One-time setup: `make setup-ar-python` creates the AR Python repo.
 - For local execution (`SubprocessRunner(use_venv=False)`), `packages_to_install` is ignored — it just imports from the local env
 - CI/CD builds the deps image and uploads the wheel
 - For dev, use `make build-image` (deps-only, requires Docker + AR Docker repo)
-
-### Pipeline submission console link
-After `submit_to_vertex()` submits a pipeline job, the Vertex AI console URL is printed to stdout so you can follow the run directly in your browser. The URL is constructed from `job.resource_name` after `job.submit()` returns.
 
 ### Rolling features performance
 The optimized pattern for pandas rolling window features with groupby uses direct `.values` assignment instead of merge:

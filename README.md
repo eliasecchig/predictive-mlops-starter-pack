@@ -37,11 +37,18 @@ That's it. You'll see feature engineering, model training (AUC ~0.89), evaluatio
 
 ```bash
 export PROJECT_ID=<your-project>
-make submit-training         # Builds container, submits to Vertex AI Pipelines
+make submit-training         # Submit training pipeline to Vertex AI
 make submit-scoring          # Score all transactions, write predictions to BigQuery
 ```
 
-The training pipeline registers the model to Vertex AI Model Registry and sets up weekly drift monitoring automatically.
+The training pipeline registers the model to Vertex AI Model Registry and sets up weekly drift monitoring automatically. After submission, the console URL is printed so you can follow the run directly.
+
+### Fast iteration with two-layer builds
+
+Code changes don't trigger Docker rebuilds. The project uses a two-layer approach:
+
+1. **Deps image** — built from `Dockerfile` + `pyproject.toml` + `uv.lock`. Only rebuilt when dependencies change. A content hash of these three files is used as the image tag, and the last verified tag is cached locally (`.deps-image-tag`) so repeat submissions skip the registry check entirely.
+2. **Code wheel** — `fraud_detector/` source is packaged as a Python wheel and published to Artifact Registry. Each KFP component installs it at startup via `packages_to_install`. Code-only changes build and upload a ~27KB wheel instead of a full container image.
 
 ## Set up production
 
@@ -118,7 +125,7 @@ deployment/terraform/            # Multi-project infra (dev, staging, prod)
 | **Vertex AI Model Registry** | Version and manage trained models |
 | **Vertex AI Model Monitoring** | Detect feature drift (Jensen-Shannon divergence) |
 | **Cloud Storage** | Model artifacts and pipeline staging |
-| **Artifact Registry** | Container images for pipeline steps |
+| **Artifact Registry** | Container images (deps-only) and Python packages (code wheel) |
 | **Workload Identity Federation** | Keyless GitHub Actions -> GCP auth |
 
 ## Develop with AI coding agents
