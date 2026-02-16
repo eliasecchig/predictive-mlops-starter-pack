@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+*.env
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform.lock.hcl
+**/vars/env.tfvars
+
+# Model artifacts
+*.joblib
+*.pkl
+*.pickle
+model_artifacts/
+
+# KFP local outputs
+local_outputs/
+
+# KFP compiled pipelines
+*.json
+!config/*.yaml
+!package.json
+!tsconfig.json
+
+# Credentials
+credentials.json
+service-account-key.json
+*.key
+
+# Logs
+*.log
+
+# Reference repos
+example_repos/
+
+# Local build caches
+.deps-image-tag
+
+# uv
+.python-version
+
+# Project-specific
+CLAUDE.md
+JOURNEY.md

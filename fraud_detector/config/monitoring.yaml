@@ -1,0 +1,16 @@
+monitoring_job_name: fraud-detector-monitoring
+schedule: "0 8 * * 1"         # Weekly Monday 8am
+project_id: ${PROJECT_ID}
+region: us-central1
+model_display_name: fraud-detector-xgb
+bq_dataset: fraud_detection
+predictions_table: fraud_scores
+feature_table: fraud_features
+drift_thresholds:
+  tx_amount: 0.3
+  avg_tx_amount_7d_customer: 0.3
+  count_tx_28d_customer: 0.3
+  avg_tx_amount_7d_terminal: 0.3
+  count_tx_28d_terminal: 0.3
+alert_emails:
+  - team@example.com
